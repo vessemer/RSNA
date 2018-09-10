@@ -12,28 +12,38 @@ import numpy as np
 
 
 class EnergyNormalization:
-    def decompose(self, images, B=7, alpha=2):
+    def __init__(self, B=7, alpha=2, gamma=2):
+        self.B = B
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def decompose(self, images):
         decomposed = []
         blured = [images]
-        for i in range(B):
-            blured += [[filters.gaussian_filter(img, alpha ** (i + 1)) for img in images]]
+        for i in range(self.B):
+            blured += [[filters.gaussian_filter(img, self.alpha * self.gamma ** i) for img in images]]
             decomposed += [[old  - new
                            for old, new in zip(blured[i], blured[i + 1])]]
         decomposed += [blured[-1]]
         return list(zip(*decomposed))
 
+    def get_energies(self, images, masks):
+        energies = list()
+        for img, mask in zip(images, masks):
+            energies.append([
+                np.std(layer[mask])
+                for layer in img
+            ])
+        return energies
 
     def normalize(self, decomposed, masks, immutable=[], immutable_masks=[]):
-        energies = [[np.std(layer[mask > 0]) 
-                     for layer in img] 
-                    for img, mask in zip(decomposed, masks)]
+        energies = self.get_energies(decomposed, masks)
+        immutable_energies = self.get_energies(immutable, immutable_masks)
 
-        immutable_energies = [[np.std(layer[mask > 0]) 
-                     for layer in img] 
-                    for img, mask in zip(immutable, immutable_masks)]
-
-        referenced = np.asarray([e.mean() 
-                                 for e in np.asarray(immutable_energies).T])
+        referenced = np.asarray([
+            e.mean() 
+            for e in np.asarray(immutable_energies).T
+        ])
 
         images = []
         diff = []
