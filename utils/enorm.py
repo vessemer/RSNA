@@ -55,8 +55,7 @@ class EnergyNormalization:
             images += [normalized]
 
         return images, diff
-
-
+    
     def iterate_normalization(self, images, masks, 
                               immutable=[], immutable_masks=[], 
                               n_iterations=10, verbose=True):
@@ -67,3 +66,28 @@ class EnergyNormalization:
             if verbose:
                 print('Step: ', i, ', diff: ', np.mean(diff))
         return images
+
+#     TODO: rename immutable -> ref
+    def normalize_by_energy(self, decomposed, masks, immutable_energies):
+        energies = self.get_energies(decomposed, masks)
+
+        images = []
+        diff = []
+        for imgs, energy in zip(decomposed, energies):
+            normalized = np.zeros(imgs[0].shape)
+            for layer, e, ref in zip(imgs, energy, immutable_energies):
+                diff += [ref / e]
+                normalized += layer * diff[-1]
+            images += [normalized]
+
+        return images, diff
+
+    def iterate_normalization_by_energy(self, images, masks, ref_energies, n_iterations=10, verbose=True):
+        diffs = list()
+        for i in range(n_iterations):
+            decomposed = self.decompose(images)
+            images, diff = self.normalize_by_energy(decomposed, masks, ref_energies) 
+            if verbose:
+                print('Step: ', i, ', diff: ', np.mean(diff))
+            diffs.append(diff)
+        return images, diffs
