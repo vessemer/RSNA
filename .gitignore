@@ -6,6 +6,12 @@ __pycache__/
 # Data dirs
 data/
 
+# Data files
+*.pth
+*.npy
+*.pickle
+*.pkl
+
 # C extensions
 *.so
 

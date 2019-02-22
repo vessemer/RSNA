@@ -2,10 +2,12 @@ from albumentations import (
     CLAHE, RandomRotate90, Transpose, ShiftScaleRotate, Blur, OpticalDistortion, 
     GridDistortion, HueSaturationValue, IAAAdditiveGaussianNoise, GaussNoise, MotionBlur, 
     MedianBlur, IAAPiecewiseAffine, IAASharpen, IAAEmboss, RandomContrast, RandomBrightness, 
-    Flip, OneOf, Compose, ToGray, InvertImg
+    Flip, OneOf, Compose, ToGray, InvertImg, HorizontalFlip
 )
 
 from albumentations.core.transforms_interface import DualTransform
+import imgaug as ia
+from imgaug import augmenters as iaa
 import enorm
 
 import numpy as np
@@ -19,56 +21,52 @@ def convex_coeff(alpha, orig, augmented):
     return ((1 - alpha) * orig + (alpha * augmented)).astype(np.uint8)
 
 
-class Crop(DualTransform):
-    """Crops region from image.
-    Args:
-        window (tuple (int, int)): 
-        central (bool): 
-        p (float [0, 1]): 
-    Targets:
-        image, mask
-    Image types:
-        uint8, float32
-    """
-    def __init__(self, window, central=False, p=1.0):
-        super(Crop, self).__init__(p)
-        self.window = np.array(window)
-        self.central = central
+class BBoxesAffine(DualTransform):
+    def __init__(self, translate_percent=(-.1, .1), rotate=(-30, 30), scale=(0.6, 1.2), p=1.0):
+        super(BBoxesAffine, self).__init__(p)
+        self.seq = iaa.Sequential([
+            iaa.Affine(
+                translate_percent=translate_percent, 
+                rotate=rotate, 
+                scale=scale
+            )
+        ])
 
-    def augment_image(self, im, anchors=None):
-        if self.central:
-            point  = np.array([
-                (im.shape[0] - self.window[0]) // 2,
-                (im.shape[1] - self.window[1]) // 2
-            ])
-        elif anchors is not None:
-            point = anchors[np.random.randint(len(anchors))] - self.window // 2
-            point = np.clip(point, 0, np.array(im.shape[:2]) - self.window)
-        else:
-            point = np.array([
-                np.random.randint(0, max(1, im.shape[0] - self.window[0] + 1)),
-                np.random.randint(0, max(1, im.shape[1] - self.window[1] + 1))
-            ])
+    def augment_image(self, data):
+        bbxs = list()
+        data['bboxes'][:, 2] += data['bboxes'][:, 0]
+        data['bboxes'][:, 3] += data['bboxes'][:, 1]
+        for bbx in data['bboxes']:
+            bbxs.append(ia.BoundingBox(*bbx.tolist()))
+        bbxs = [ia.BoundingBoxesOnImage(bbxs, data['image'].shape[:2])]
 
-        return im[
-            point[0]: point[0] + self.window[0], 
-            point[1]: point[1] + self.window[1]
-        ]
+        seq_det = self.seq.to_deterministic()
+        data['image'] = seq_det.augment_images(data['image'][np.newaxis])[0]
+        bbx_aug = seq_det.augment_bounding_boxes(bbxs)[0]
+        bbx_aug = bbx_aug.cut_out_of_image()
 
-    def apply(self, img, anchors=None, **params):
-        return self.augment_image(img, anchors)
+        bbxs = list()
+        for bbx in bbx_aug.bounding_boxes:
+            bbxs.append([bbx.x1_int, bbx.y1_int, int(bbx.width), int(bbx.height)])
+        data['bboxes'] = np.array(bbxs)
+
+        return data
+
+    def apply(self, data, **params):
+        return self.augment_image(data)
 
 
-def get_augmentations(strength=1.):
+def get_bboxes_augmentations(strength=1.):
     assert strength > 0, 'Value of `strength` should be of type positive int'
     coeff = int(3 * strength)
     k = max(1, coeff if coeff % 2 else coeff - 1)
     return Compose([
         Compose([
-            InvertImg(),
-            RandomRotate90(),
-            Flip(),
-            Transpose(),
+#             InvertImg(),
+#             RandomRotate90(),
+#             Flip(),
+#             Transpose(),
+            HorizontalFlip(),
         ], p=1.),
         Compose([
             OneOf([
@@ -89,17 +87,17 @@ def get_augmentations(strength=1.):
                 RandomContrast(),
                 RandomBrightness(),
             ], p=.4),
-            ShiftScaleRotate(shift_limit=0.0625, scale_limit=.5, rotate_limit=45, p=.7),
-            OneOf([
-                OpticalDistortion(p=0.3),
-                GridDistortion(p=0.3),
-                IAAPiecewiseAffine(p=0.3),
-            ], p=0.6),
+#             ShiftScaleRotate(shift_limit=0.0625, scale_limit=(-.5, 0.), rotate_limit=45, p=.7),
+#             OneOf([
+#                 OpticalDistortion(p=0.3),
+#                 GridDistortion(p=0.3),
+#                 IAAPiecewiseAffine(p=0.3),
+#             ], p=0.6),
         ], p=0.9)
-    ])
+    ], bbox_params={'format': 'coco', 'min_area': 22, 'min_visibility': .1, 'label_fields': ['category_id']})
 
 
-class Augmentation:
+class BBoxesAugmentation:
     def __init__(self, side, strength=1.):
         assert strength >= 0, 'Value of `strength` should be of type not negative int'
         cv2.setNumThreads(0)
@@ -108,31 +106,13 @@ class Augmentation:
         train = bool(strength)
         self.augs = None
         if train:
-            self.augs = get_augmentations(strength)
+            self.augs = get_bboxes_augmentations(strength)
 
-        self.crop = Crop(window=(side + side // 2, side + side // 2), central=not train)
-        self.last_crop = Crop(window=(side, side), central=not train)
+        self.affine = BBoxesAffine()
 
     def __call__(self, data):
-        if data['mask'] is not None:
-            data['image'] = np.dstack([data['image'], data['mask']])
         if self.augs is not None:
-            data['image'] = self.crop.apply(data['image'])
-
-        data.update({
-            'image': data['image'][..., :3],
-            'mask': data['image'][..., 3:],
-        })
-        if self.augs is not None:
+            data = self.affine.apply(data)
             data = self.augs(**data)
 
-        if data['mask'] is not None:
-            data['image'] = np.dstack([data['image'], data['mask']])
-        data['image'] = self.last_crop.apply(data['image'])
-
-        data.update({
-            'image': data['image'][..., :3],
-            'mask': data['image'][..., 3:],
-        })
-        #data.update({'mask': np.expand_dims(data['mask'], -1)})
         return data

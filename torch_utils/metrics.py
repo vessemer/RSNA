@@ -6,9 +6,10 @@ from collections import defaultdict
 THRESHOLDS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
 
 
-def aggregate(metrics):
+def aggregate(metrics, ignored_keys=[]):
     grouped = defaultdict(list)
-    keys = metrics[0].keys()
+    keys = set(metrics[0].keys())
+    keys = list(keys.difference(ignored_keys))
     for key in keys:
         for meter in metrics:
             grouped[key].append(meter[key])
@@ -19,7 +20,6 @@ def aggregate(metrics):
             meter = meter.data.cpu().numpy() 
         grouped[key] = meter / len(grouped[key])
     return grouped
-
 
 class Metric:
     def __init__(self):
